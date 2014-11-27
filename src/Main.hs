@@ -4,12 +4,15 @@ module Main where
 
 import Control.Lens
 import Control.Monad.IO.Class
-import qualified Data.Conduit as C
+import Control.Monad.Trans.Control (MonadBaseControl)
+import Control.Monad.Trans.Resource (MonadResource)
 import qualified Data.ByteString.Char8 as B8
+import qualified Data.Conduit as C
 import qualified Data.Conduit.List as CL
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import qualified Web.Authenticate.OAuth as OA
+import System.IO (hFlush, stdout)
+import Web.Authenticate.OAuth
 import Network.HTTP.Conduit
 import Web.Twitter.Conduit
 import Web.Twitter.Types.Lens
@@ -26,10 +29,10 @@ authorize :: (MonadBaseControl IO m, MonadResource m)
           -> Manager
           -> m Credential
 authorize oauth getPIN mgr = do
-    cred <- OA.getTemporaryCredential oauth mgr
-    let url = OA.authorizeUrl oauth cred
+    cred <- getTemporaryCredential oauth mgr
+    let url = authorizeUrl oauth cred
     pin <- getPIN url
-    OA.getAccessToken oauth (OA.insert "oauth_verifier" (B8.pack pin) cred) mgr
+    getAccessToken oauth (insert "oauth_verifier" (B8.pack pin) cred) mgr
 
 getTWInfo :: IO TWInfo
 getTWInfo = do
@@ -51,7 +54,7 @@ main = do
       sourceWithMaxId twInfo mgr $ userTimeline (ScreenNameParam "thimura") -- homeTimeline
         C.$= CL.isolate 100
         C.$$ CL.mapM_ $ \status -> liftIO $ do
-          T.putStrLn $ T.concat [ T.pack . show $ status ^. statusId
+          TIO.putStrLn $ T.concat [ T.pack . show $ status ^. statusId
                                 , ": "
                                 , status ^. statusUser . userScreenName
                                 , ": "
