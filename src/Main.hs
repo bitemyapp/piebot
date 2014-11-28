@@ -12,17 +12,12 @@ import qualified Data.Conduit as C
 import qualified Data.Conduit.List as CL
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import System.Environment (getEnv)
 import System.IO (hFlush, stdout)
 import Web.Authenticate.OAuth
 import Network.HTTP.Conduit
 import Web.Twitter.Conduit
 import Web.Twitter.Types.Lens
-
-tokens :: OAuth
-tokens = twitterOAuth
-    { oauthConsumerKey = error "Provide consumer key!"
-    , oauthConsumerSecret = error "Provide consumer secret!"
-    }
 
 authorize :: (MonadBaseControl IO m, MonadResource m)
           => OAuth -- ^ OAuth Consumer key and secret
@@ -37,8 +32,14 @@ authorize oauth getPIN mgr = do
 
 getTWInfo :: IO TWInfo
 getTWInfo = do
-    cred <- withManager $ \mgr -> authorize tokens getPIN mgr
-    return $ setCredential tokens cred def
+  key <- getEnv "OAUTH_KEY"
+  secret <- getEnv "OAUTH_SECRET"
+  let tokens = twitterOAuth {
+          oauthConsumerKey = B8.pack key
+        , oauthConsumerSecret = B8.pack secret
+        }
+  cred <- withManager $ \mgr -> authorize tokens getPIN mgr
+  return $ setCredential tokens cred def
   where
     getPIN url = liftIO $ do
         putStrLn $ "browse URL: " ++ url
