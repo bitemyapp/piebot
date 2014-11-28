@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleContexts  #-}
 
 module Main where
 
@@ -51,10 +52,12 @@ main = do
     putStrLn $ "# your home timeline (up to 100 tweets):"
     withManager $ \mgr -> do
       -- listsStatuses (ListNameParam "thimura/haskell")
-      sourceWithMaxId twInfo mgr $ userTimeline (ScreenNameParam "thimura") -- homeTimeline
-        C.$= CL.isolate 100
-        C.$$ CL.mapM_ $ \status -> liftIO $ do
-          TIO.putStrLn $ T.concat [ T.pack . show $ status ^. statusId
+      -- homeTimeline
+      -- userTimeline (ScreenNameParam "thimura")
+      sourceWithMaxId twInfo mgr $ userTimeline (ScreenNameParam "thimura")
+      C.$= CL.isolate 100
+      C.$$ CL.mapM_ $ \status -> liftIO $ do
+        TIO.putStrLn $ T.concat [ T.pack . show $ status ^. statusId
                                 , ": "
                                 , status ^. statusUser . userScreenName
                                 , ": "
