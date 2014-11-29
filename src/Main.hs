@@ -1,81 +1,62 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts  #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Main where
 
-import           Control.Lens
+import           Control.Applicative ((<$>))
+import           Control.Lens hiding ((|>))
 import           Control.Monad.IO.Class
+import           Control.Monad.Reader (ask)
+import           Control.Monad.State (get, put)
 import           Control.Monad.Trans.Control (MonadBaseControl)
 import           Control.Monad.Trans.Resource (MonadResource)
-import           Data.Binary
+import           Data.Acid
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.Conduit as C
 import qualified Data.Conduit.List as CL
+import           Data.SafeCopy
+import           Data.Sequence
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import qualified Data.Vector as V
-import           Data.Vector.Binary
-import           GHC.Generics (Generic)
+import           Data.Typeable (Typeable)
 import           Network.HTTP.Conduit
 import           System.Environment (getEnv)
 import           System.IO (hFlush, stdout)
 import qualified Web.Authenticate.OAuth as OA
 import           Web.Twitter.Conduit
-import           Web.Twitter.Types (Status(..),
-                                    Coordinates(..),
-                                    Entities(..),
-                                    HashTagEntity(..),
-                                    Place(..),
-                                    Entity(..),
-                                    User(..),
-                                    BoundingBox(..),
-                                    MediaEntity(..),
-                                    URLEntity(..),
-                                    UserEntity(..),
-                                    MediaSize(..),
-                                    Contributor(..))
-import qualified Web.Twitter.Types.Lens as TTL
+import           Web.Twitter.Types.Lens
 
 
 data StatusDb = StatusDb {
-  statuses :: V.Vector Status
-  } deriving (Generic)
+  statuses :: Seq ReducedStatus
+  } deriving (Show, Typeable)
 
-deriving instance Generic Status
-deriving instance Generic Contributor
-deriving instance Generic Coordinates
-deriving instance Generic Entities
-deriving instance Generic Place
-deriving instance Generic (Entity a)
-deriving instance Generic (HashMap k v)
-deriving instance Generic HashTagEntity
-deriving instance Generic User
-deriving instance Generic BoundingBox
-deriving instance Generic UserEntity
-deriving instance Generic MediaEntity
-deriving instance Generic URLEntity
-deriving instance Generic MediaSize
+data ReducedStatus = ReducedStatus {
+    rdsText     :: T.Text
+  , rdsUserName :: T.Text
+  , rdsLang     :: String
+  } deriving (Show, Typeable)
 
-instance Binary MediaSize
-instance Binary User
-instance Binary BoundingBox
-instance Binary Place
-instance Binary HashTagEntity
-instance Binary (Entity HashTagEntity)
-instance Binary (Entity URLEntity)
-instance Binary (Entity MediaEntity)
-instance Binary (Entity UserEntity)
-instance Binary UserEntity
-instance Binary URLEntity
-instance Binary MediaEntity
-instance Binary Entities
-instance Binary Coordinates
-instance Binary Contributor
-instance Binary Status
-instance Binary StatusDb
+resetStatuses :: Update StatusDb ()
+resetStatuses = put $ StatusDb Data.Sequence.empty
+
+addStatus :: ReducedStatus -> Update StatusDb ()
+addStatus status = do
+  StatusDb statuses <- get
+  put $ StatusDb (statuses |> status)
+
+viewStatuses :: Query StatusDb (Seq ReducedStatus)
+viewStatuses = do
+  StatusDb statuses <- ask
+  return statuses
+
+$(deriveSafeCopy 0 'base ''StatusDb)
+$(deriveSafeCopy 0 'base ''ReducedStatus)
+$(makeAcidic ''StatusDb ['addStatus, 'viewStatuses, 'resetStatuses])
+
 
 authorize :: (MonadBaseControl IO m, MonadResource m)
           => OA.OAuth -- ^ OAuth Consumer key and secret
@@ -108,15 +89,28 @@ getTWInfo = do
 
 printStatus :: Status -> IO ()
 printStatus status = TIO.putStrLn texty
-  where texty = T.concat [ T.pack . show $ status ^. TTL.statusId
+  where texty = T.concat [ T.pack . show $ status ^. statusId
                          , ": "
-                         , status ^. TTL.statusUser . TTL.userScreenName
+                         , status ^. statusUser . userScreenName
                          , ": "
-                         , status ^. TTL.statusText
+                         , status ^. statusText
                          ]
 
 saveStatus :: Status -> IO ()
 saveStatus status = undefined
+
+-- Prelude> let exampleStatus = ReducedStatus "Hello, World!" "argumatronic" "EN"
+-- Prelude> sdb <- openLocalStateFrom "db/" (StatusDb Data.Sequence.empty)
+-- Prelude> Data.Acid.update sdb (AddStatus exampleStatus)
+-- ()
+-- Prelude> statuses <- query sdb ViewStatuses
+-- Prelude> statuses
+-- fromList [ReducedStatus {rdsText = "Hello, World!", rdsUserName = "argumatronic", rdsLang = "EN"}]
+-- Prelude> Data.Acid.update sdb (AddStatus exampleStatus)
+-- ()
+-- Prelude> statuses <- query sdb ViewStatuses
+-- Prelude> statuses
+-- fromList [ReducedStatus {rdsText = "Hello, World!", rdsUserName = "argumatronic", rdsLang = "EN"},ReducedStatus {rdsText = "Hello, World!", rdsUserName = "argumatronic", rdsLang = "EN"}]
 
 main :: IO ()
 main = do
