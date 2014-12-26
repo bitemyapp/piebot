@@ -17,8 +17,8 @@ import           Data.Acid
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.Conduit as C
 import qualified Data.Conduit.List as CL
+import qualified Data.Map.Strict as Map
 import           Data.SafeCopy
-import           Data.Sequence
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import           Data.Typeable (Typeable)
@@ -31,24 +31,31 @@ import           Web.Twitter.Types.Lens
 
 
 data StatusDb = StatusDb {
-  statuses :: Seq ReducedStatus
+  statuses :: Map.Map StatusId ReducedStatus
   } deriving (Show, Typeable)
 
+type TweetText = T.Text
+type Username  = T.Text
+
 data ReducedStatus = ReducedStatus {
-    rdsText     :: T.Text
-  , rdsUserName :: T.Text
-  , rdsLang     :: String
+    rdsText     :: TweetText
+  , rdsUserName :: Username
+    -- type LanguageCode = String
+  , rdsLang     :: Maybe LanguageCode
+    -- Integer
+  , rdsStatusId :: StatusId
   } deriving (Show, Typeable)
 
 resetStatuses :: Update StatusDb ()
-resetStatuses = put $ StatusDb Data.Sequence.empty
+resetStatuses = put $ StatusDb Map.empty
 
 addStatus :: ReducedStatus -> Update StatusDb ()
 addStatus status = do
   StatusDb statuses <- get
-  put $ StatusDb (statuses |> status)
+  put $ StatusDb (Map.insert k status statuses)
+  where k = rdsStatusId status
 
-viewStatuses :: Query StatusDb (Seq ReducedStatus)
+viewStatuses :: Query StatusDb (Map.Map StatusId ReducedStatus)
 viewStatuses = do
   StatusDb statuses <- ask
   return statuses
@@ -96,11 +103,18 @@ printStatus status = TIO.putStrLn texty
                          , status ^. statusText
                          ]
 
-saveStatus :: Status -> IO ()
-saveStatus status = undefined
+saveStatus :: AcidState StatusDb -> Status -> IO ()
+saveStatus myDb status = do
+  Data.Acid.update myDb (AddStatus rds)
+  return ()
+  where rds  = ReducedStatus txt user lang sid
+        txt  = status ^. statusText
+        user = status ^. statusUser . userScreenName
+        lang = status ^. statusLang
+        sid  = status ^. statusId
 
--- Prelude> let exampleStatus = ReducedStatus "Hello, World!" "argumatronic" "EN"
--- Prelude> sdb <- openLocalStateFrom "db/" (StatusDb Data.Sequence.empty)
+-- Prelude> let exampleStatus = ReducedStatus "Hello, World!" "argumatronic" "EN" 1
+-- Prelude> sdb <- openLocalStateFrom "db/" (StatusDb Map.empty)
 -- Prelude> Data.Acid.update sdb (AddStatus exampleStatus)
 -- ()
 -- Prelude> statuses <- query sdb ViewStatuses
@@ -110,17 +124,23 @@ saveStatus status = undefined
 -- ()
 -- Prelude> statuses <- query sdb ViewStatuses
 -- Prelude> statuses
--- fromList [ReducedStatus {rdsText = "Hello, World!", rdsUserName = "argumatronic", rdsLang = "EN"},ReducedStatus {rdsText = "Hello, World!", rdsUserName = "argumatronic", rdsLang = "EN"}]
+-- fromList [ReducedStatus {rdsText = "Hello, World!", rdsUserName = "argumatronic", rdsLang = "EN", rdsStatusId = 1},ReducedStatus {rdsText = "Hello, World!", rdsUserName = "argumatronic", rdsLang = "EN", rdsStatusId = 1}]
+
+saveStream :: TWInfo
+           -> AcidState StatusDb
+           -> Int
+           -> UserParam
+           -> IO ()
+saveStream twInfo sdb numTweets user = do
+  withManager $ \mgr -> do
+      sourceWithMaxId twInfo mgr $
+        userTimeline user
+      C.$= CL.isolate numTweets
+      C.$$ CL.mapM_ $ \status -> liftIO (saveStatus sdb status)
 
 main :: IO ()
 main = do
     twInfo <- getTWInfo
-    putStrLn $ "# your home timeline (up to 100 tweets):"
-    withManager $ \mgr -> do
-      -- listsStatuses (ListNameParam "thimura/haskell")
-      -- homeTimeline
-      -- userTimeline (ScreenNameParam "thimura")
-      sourceWithMaxId twInfo mgr $
-        userTimeline (ScreenNameParam "argumatronic")
-      C.$= CL.isolate 100
-      C.$$ CL.mapM_ $ \status -> liftIO (printStatus status)
+    putStrLn "Opening database"
+    myDb <- openLocalStateFrom "db/" (StatusDb Map.empty)
+    saveStream twInfo myDb 100 (ScreenNameParam "argumatronic")
