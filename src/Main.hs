@@ -103,15 +103,18 @@ printStatus status = TIO.putStrLn texty
                          , status ^. statusText
                          ]
 
-saveStatus :: AcidState StatusDb -> Status -> IO ()
-saveStatus myDb status = do
-  Data.Acid.update myDb (AddStatus rds)
-  return ()
-  where rds  = ReducedStatus txt user lang sid
+toReducedStatus :: Status -> ReducedStatus
+toReducedStatus status = rds
+  where rds = ReducedStatus txt user lang sid
         txt  = status ^. statusText
         user = status ^. statusUser . userScreenName
         lang = status ^. statusLang
         sid  = status ^. statusId
+
+saveStatus :: AcidState StatusDb -> Status -> IO ()
+saveStatus myDb status = do
+  Data.Acid.update myDb (AddStatus (toReducedStatus status))
+  return ()
 
 -- Prelude> let exampleStatus = ReducedStatus "Hello, World!" "argumatronic" "EN" 1
 -- Prelude> sdb <- openLocalStateFrom "db/" (StatusDb Map.empty)
@@ -126,21 +129,26 @@ saveStatus myDb status = do
 -- Prelude> statuses
 -- fromList [ReducedStatus {rdsText = "Hello, World!", rdsUserName = "argumatronic", rdsLang = "EN", rdsStatusId = 1},ReducedStatus {rdsText = "Hello, World!", rdsUserName = "argumatronic", rdsLang = "EN", rdsStatusId = 1}]
 
-saveStream :: TWInfo
+foldStream :: TWInfo
            -> AcidState StatusDb
            -> Int
            -> UserParam
-           -> IO ()
-saveStream twInfo sdb numTweets user = do
+           -> IO (Map.Map StatusId ReducedStatus)
+foldStream twInfo sdb numTweets user = do
   withManager $ \mgr -> do
       sourceWithMaxId twInfo mgr $
         userTimeline user
       C.$= CL.isolate numTweets
-      C.$$ CL.mapM_ $ \status -> liftIO (saveStatus sdb status)
+      -- C.$$ CL.mapM_ $ \status -> liftIO (saveStatus sdb status)
+      C.$$ CL.foldM reduceStatus Map.empty
+  where reduceStatus m status = return $ Map.insert k rds m
+          where rds = toReducedStatus status
+                k   = rdsStatusId rds
 
 main :: IO ()
 main = do
     twInfo <- getTWInfo
     putStrLn "Opening database"
     myDb <- openLocalStateFrom "db/" (StatusDb Map.empty)
-    saveStream twInfo myDb 100 (ScreenNameParam "argumatronic")
+    m <- foldStream twInfo myDb 100 (ScreenNameParam "argumatronic")
+    print m
