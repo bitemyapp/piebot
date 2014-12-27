@@ -49,11 +49,10 @@ data ReducedStatus = ReducedStatus {
 resetStatuses :: Update StatusDb ()
 resetStatuses = put $ StatusDb Map.empty
 
-addStatus :: ReducedStatus -> Update StatusDb ()
-addStatus status = do
+mergeStatuses :: Map.Map StatusId ReducedStatus -> Update StatusDb ()
+mergeStatuses m = do
   StatusDb statuses <- get
-  put $ StatusDb (Map.insert k status statuses)
-  where k = rdsStatusId status
+  put $ StatusDb (Map.union statuses m)
 
 viewStatuses :: Query StatusDb (Map.Map StatusId ReducedStatus)
 viewStatuses = do
@@ -62,7 +61,7 @@ viewStatuses = do
 
 $(deriveSafeCopy 0 'base ''StatusDb)
 $(deriveSafeCopy 0 'base ''ReducedStatus)
-$(makeAcidic ''StatusDb ['addStatus, 'viewStatuses, 'resetStatuses])
+$(makeAcidic ''StatusDb ['mergeStatuses, 'viewStatuses, 'resetStatuses])
 
 
 authorize :: (MonadBaseControl IO m, MonadResource m)
@@ -111,11 +110,6 @@ toReducedStatus status = rds
         lang = status ^. statusLang
         sid  = status ^. statusId
 
-saveStatus :: AcidState StatusDb -> Status -> IO ()
-saveStatus myDb status = do
-  Data.Acid.update myDb (AddStatus (toReducedStatus status))
-  return ()
-
 -- Prelude> let exampleStatus = ReducedStatus "Hello, World!" "argumatronic" "EN" 1
 -- Prelude> sdb <- openLocalStateFrom "db/" (StatusDb Map.empty)
 -- Prelude> Data.Acid.update sdb (AddStatus exampleStatus)
@@ -130,16 +124,14 @@ saveStatus myDb status = do
 -- fromList [ReducedStatus {rdsText = "Hello, World!", rdsUserName = "argumatronic", rdsLang = "EN", rdsStatusId = 1},ReducedStatus {rdsText = "Hello, World!", rdsUserName = "argumatronic", rdsLang = "EN", rdsStatusId = 1}]
 
 foldStream :: TWInfo
-           -> AcidState StatusDb
            -> Int
            -> UserParam
            -> IO (Map.Map StatusId ReducedStatus)
-foldStream twInfo sdb numTweets user = do
+foldStream twInfo numTweets user = do
   withManager $ \mgr -> do
       sourceWithMaxId twInfo mgr $
         userTimeline user
       C.$= CL.isolate numTweets
-      -- C.$$ CL.mapM_ $ \status -> liftIO (saveStatus sdb status)
       C.$$ CL.foldM reduceStatus Map.empty
   where reduceStatus m status = return $ Map.insert k rds m
           where rds = toReducedStatus status
@@ -149,6 +141,9 @@ main :: IO ()
 main = do
     twInfo <- getTWInfo
     putStrLn "Opening database"
-    myDb <- openLocalStateFrom "db/" (StatusDb Map.empty)
-    m <- foldStream twInfo myDb 100 (ScreenNameParam "argumatronic")
+    m <- foldStream twInfo 100 (ScreenNameParam "argumatronic")
     print m
+    myDb <- openLocalStateFrom "db/" (StatusDb Map.empty)
+    Data.Acid.update myDb (MergeStatuses m)
+    Data.Acid.createCheckpoint myDb
+    Data.Acid.closeAcidState myDb
